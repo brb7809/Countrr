@@ -1,0 +1,117 @@
+import os
+import pdfplumber
+import pandas as pd
+
+# Recuerda cambiar esta ruta por la carpeta real donde están tus PDFs en tu PC
+# Ejemplo: r"D:\Users\HMendizabalC\ProcesadorCines"
+CARPETA_PDFS = r"C:\Ruta\A\Tus\PDFs"
+
+def convertir_moneda_brasil(texto):
+    """
+    Convierte un texto con formato de moneda brasileña (ej. '1.590,00') 
+    a un número decimal que Python pueda sumar matemáticamente (1590.00).
+    """
+    texto = texto.strip()
+    # 1. Quitamos los puntos de los miles
+    texto = texto.replace('.', '')
+    # 2. Cambiamos la coma de los decimales por un punto
+    texto = texto.replace(',', '.')
+    
+    try:
+        return float(texto)
+    except ValueError:
+        return 0.0
+
+def procesar_archivos():
+    resultados = []
+
+    for nombre_archivo in os.listdir(CARPETA_PDFS):
+        if nombre_archivo.lower().endswith(".pdf"):
+            ruta_completa = os.path.join(CARPETA_PDFS, nombre_archivo)
+            print(f"Analizando: {nombre_archivo}...")
+
+            with pdfplumber.open(ruta_completa) as pdf:
+                pagina = pdf.pages[0]
+                tabla = pagina.extract_table()
+                
+                if not tabla:
+                    continue
+
+                fecha_actual = None
+                subtotal_publico = 0
+                subtotal_valor = 0.0  
+
+                for fila in tabla:
+                    fila_limpia = [str(celda).strip().lower() if celda is not None else "" for celda in fila]
+                    
+                    # Detectar cambio de fecha
+                    if "/" in fila_limpia[0] and len(fila_limpia[0]) >= 8:
+                        if fecha_actual is not None:
+                            resultados.append({
+                                "Archivo": nombre_archivo,
+                                "Fecha": fecha_actual,
+                                "Público (Sin Cortesía)": subtotal_publico,
+                                "Valor R$ (Sin Cortesía)": subtotal_valor
+                            })
+                        fecha_actual = fila_limpia[0]
+                        subtotal_publico = 0
+                        subtotal_valor = 0.0
+
+                    texto_fila = " ".join(fila_limpia)
+
+                    # Si la fila es de un ingreso válido (inteira o meia)
+                    if "inteira" in texto_fila or "meia" in texto_fila:
+                        # Ignoramos las filas de totales generales del final de la hoja
+                        if "total inteira" in texto_fila or "total meia" in texto_fila:
+                            continue
+                        
+                        # Filtramos las celdas vacías
+                        celdas_con_datos = [celda for celda in fila_limpia if celda != ""]
+                        
+                        for i, celda in enumerate(celdas_con_datos):
+                            if celda == "inteira" or celda == "meia":
+                                # 1. Sumar el PÚBLICO (Inmediatamente a la derecha)
+                                if i + 1 < len(celdas_con_datos):
+                                    try:
+                                        subtotal_publico += int(celdas_con_datos[i + 1])
+                                    except ValueError:
+                                        pass
+                                
+                                # 2. Sumar el VALOR EN REALES (Dos espacios a la derecha)
+                                if i + 2 < len(celdas_con_datos):
+                                    valor_reales = convertir_moneda_brasil(celdas_con_datos[i + 2])
+                                    subtotal_valor += valor_reales
+                                break # Ya procesamos esta fila, salimos de este mini-ciclo
+
+                # Guardar la última fecha procesada al llegar al final de la tabla
+                if fecha_actual is not None:
+                    resultados.append({
+                        "Archivo": nombre_archivo,
+                        "Fecha": fecha_actual,
+                        "Público (Sin Cortesía)": subtotal_publico,
+                        "Valor R$ (Sin Cortesía)": subtotal_valor
+                    })
+
+    # Mostrar y exportar resultados
+    if resultados:
+        df = pd.DataFrame(resultados)
+        print("\n--- RESULTADOS OBTENIDOS ---")
+        print(df.to_string(index=False))
+        
+        # Calcular e imprimir los totales generales en consola
+        total_publico = df["Público (Sin Cortesía)"].sum()
+        total_valor = df["Valor R$ (Sin Cortesía)"].sum()
+        
+        print("-" * 65)
+        print(f"TOTAL PÚBLICO: {total_publico}")
+        print(f"TOTAL VALOR R$: {total_valor:.2f}")
+        print("-" * 65)
+        
+        ruta_excel = os.path.join(CARPETA_PDFS, "Reporte_Subtotales.xlsx")
+        df.to_excel(ruta_excel, index=False)
+        print(f"\nSe ha generado un archivo Excel con los resultados en: {ruta_excel}")
+    else:
+        print("No se encontraron datos para procesar.")
+
+if __name__ == "__main__":
+    procesar_archivos()
